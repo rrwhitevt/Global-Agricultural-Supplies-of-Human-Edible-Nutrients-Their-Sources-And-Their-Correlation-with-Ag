@@ -1,0 +1,937 @@
+#Set the working directory
+#setwd("Substitute_Your_Path_Here")
+
+#Open packages
+library(reshape2)
+library(ggmap)
+library(maps)
+library(mapdata)
+library(plyr)
+library(ggsci)
+library(RColorBrewer)
+library(ggrepel)
+library(dplyr)
+
+#Read in data
+d <- read.csv("Production.csv")
+a <- read.csv("Animal.csv")
+cmp <- read.csv("Composition.csv")
+f <- read.csv("Population_Female.csv")
+m <- read.csv("Population_Male.csv")
+r <- read.csv("LocationReference.csv")
+n <- read.csv("Requirements.csv")
+gcr <- read.csv("GraphCrossRef.csv")
+e <- read.csv("GHG.csv")
+t <- read.csv("Water.csv")
+afi <- read.csv("AnimalFeedIntake.csv")
+w <- read.csv("Food Waste Averages.csv")
+ip <- read.csv("Imports.csv")
+ex <- read.csv("Exports.csv")
+
+
+#___________________________________________________TRADE_____________________________________________________________________________________________________________
+#Keep only needed columns from imports data
+ip <- ip[c("Area", "Item", "Year", "Value")]
+names(ip) <- c("Area", "Item", "Year", "Imported")
+
+#keep only needed columns from exports data
+ex <- ex[c("Area", "Item", "Year", "Value")]
+names(ex) <- c("Area", "Item", "Year", "Exported")
+
+#Merge imports and exports into a single dataframe by area, item and year
+td <- merge(ip, ex, by=c("Area", "Item", "Year"))
+
+#Fix naming conventions for items not consistently named within FAO database
+td$Item <- ifelse(td$Item == "Nuts nes", "Nuts, nes",
+                  ifelse(td$Item == "Rice - total  (Rice milled equivalent)", "Rice, paddy",
+                         ifelse(td$Item == "Roots and tubers nes", "Roots and tubers, nes",
+                                ifelse(td$Item== "Spices nes", "Spices, nes",
+                                       ifelse(td$Item == "Sugar crops nes", "Sugar crops, nes",
+                                              ifelse(td$Item == "Cinnamon (cannella)", "Cinnamon (canella)",
+                                                     ifelse(td$Item == "Brazil nuts, shelled", "Brazil nuts, with shell",
+                                                            ifelse(td$Item == "Groundnuts, shelled", "Groundnuts, with shell", as.character(td$Item) ))))))))
+
+#___________________________________________________WASTE_____________________________________________________________________________________________________________
+#Fix capitalization in cmp pulses
+cmp$Category <- ifelse(cmp$Category == "pulses", "Pulses", as.character(cmp$Category))
+#Change Northern America to North America
+w$Area <- ifelse(w$Area=="Northern America", "North America", as.character(w$Area))
+
+#Create a cross reference between the categories used in the composition database and the categories used in the food waste database
+Category <- unique(cmp$Category)
+Food_Class <- c("Nuts and Oilseeds", "Spices", "Fruits", "Fruits", "Vegetables, fresh", "Fruits", 
+                "Cereals and Sweeteners", "Pulses", "Fruits", "Nuts and Oilseeds", "Roots and Tubers",
+                NA, "Fruits", "Fruits", "Cereals and Sweeteners", "Meat", "Eggs", "Meat", "Meat", "Meat",
+                "Meat", "Meat","Milk")
+wcr <- data.frame(Category, Food_Class)
+
+#Remove food cateogries that do not map to food wate database (fibrous products)
+wcr <- subset(wcr,is.na(wcr$Food_Class)==F)
+
+#Merge cross reference into food waste database
+w <- merge(w, wcr, by=c("Food_Class"), all=T)
+
+#___________________________________________________ANIMAL_____________________________________________________________________________________________________________
+#Create a cross reference to relate feed types used in the animal feed intake data to those used in the production data
+Feed_Type <- unique(afi$Feed_Type)
+
+#Feed types that are not human consumable were given "NA" values
+Category <- c(NA,NA,NA,"Roots and Tubers", NA, "Cereals", NA, "Pulses", "Roots and Tubers", "Fresh Fruit", "Cereals", "Cereals", "Cereals", "Cereals", "Pulses", NA, "Cereals", "Cereals", "Cereals")
+
+#Map an adjustment to the portion of each food type that is human consumable
+Adjust <- c(0, 0, 0, 1, 0.73,1,0.256,1,1,1,0.5,1,1,1,1,0.73,1,1,1)
+
+#Create cross reference dataframe with references and adjustment factors
+frcr <- data.frame(Feed_Type, Category, Adjust)
+
+#Merge cross reference into animal feed intake data
+afi <- merge(afi, frcr,by="Feed_Type", all=T)
+
+#Assume missing animal populations are 0
+afi$Population[is.na(afi$Population)] <- 0
+
+#Calculate feed intake as feed intake of each animal/year multiplied by the number of animals, adjusted for human edible portion
+afi$AnimalFeedKg <- afi$Feed_Intake*afi$Population*afi$Adjust
+
+#Isolate milk producing animals
+#afi <- subset(afi, afi$Class %in% c("Buffaloes", "Cattle", "Sheep and Goats"))
+
+#Remove unneeded columns for animal feed intake estimation and rename
+afi <- afi[c("Area", "Class", "Year", "AnimalFeedKg", "Category")]
+names(afi) <- c("FAO", "Class", "Year", "AnimalFeedKg", "Category")
+
+#Add location cross reference into animal feed intake data
+afi <- merge(afi, gcr, by="FAO", all=T)
+
+#Fix some missing continent values
+afi$Continent <- ifelse(afi$FAO == "Saint Lucia", "North America", 
+                        ifelse(afi$FAO == "Saint Helena, Ascension and Tristan da Cunha", "Europe", 
+                               ifelse(afi$FAO == "Dominica", "North America", 
+                                      ifelse(afi$FAO == "Liechtenstein", "Europe",
+                                             ifelse(afi$FAO == "Netherlands Antilles (former)", "Europe", 
+                                                    ifelse(afi$FAO=="Saint Pierre and Miquelon", "North America",
+                                                           ifelse(afi$FAO == "British Virgin Islands", "Europe", 
+                                                                  ifelse(afi$FAO == "American Samoa", "North America",
+                                                                         ifelse(afi$FAO=="Montserrat", "Europe",
+                                                                                ifelse(afi$FAO == "Falkland Islands (Malvinas)", "Europe",
+                                                                                       ifelse(afi$FAO == "Greenland", "Europe",
+                                                                                              ifelse(afi$FAO =="Wallis and Futuna Islands","Europe",
+                                                                                                     ifelse(afi$FAO == "Eswatini", "Africa", 
+                                                                                                            ifelse(afi$FAO == "Cook Islands", "Oceania",
+                                                                                                                   ifelse(afi$FAO == "Bermuda", "Europe", 
+                                                                                                                          ifelse(afi$FAO == "Saint Kitts and Nevis", "North America",
+                                                                                                                                 ifelse(afi$FAO == "Sudan (former)", "Africa",
+                                                                                                                                        ifelse(afi$FAO == "Niue", "Oceania",
+                                                                                                                                               ifelse(afi$FAO == "Faroe Islands", "Europe", as.character(afi$Continent))))))))))))))))))))
+
+
+#Remove all feeds not consumed by humans
+afi <- subset(afi, is.na(afi$Category)==F)
+
+#Add together feed intake by year and category at the global level
+afiw <- dcast(afi, Year+Category~., fun.aggregate=sum, value.var="AnimalFeedKg")
+names(afiw) <- c("Year", "Category", "AnimalFedkg")
+afiw$Area <- "World"
+
+#Add together feed intake by year and category at the continent level
+afim <- dcast(afi, Continent+Year+Category~., fun.aggregate=sum, value.var="AnimalFeedKg")
+names(afim) <- c("Area", "Year", "Category", "AnimalFedkg")
+
+#Add together feed intake by year and category at the individual country level
+afic <- dcast(afi, FAO+Year+Category~., fun.aggregate=sum, value.var="AnimalFeedKg")
+names(afic) <- c("Area", "Year", "Category", "AnimalFedkg")
+
+#Bind together rows of data reflecting global sum of feed consumed by animals, continent-level sums, and individual country sums
+aiff <- rbind(afiw, afim)
+afif <- rbind(aiff, afic)
+
+#Add years into the food waste data to facilitate easy merging (optional step)
+names(w) <- c("Food_Class", "Continent", "WastePct", "Category")
+w$Year <- 2009
+for(i in 2009:2018) {
+  wt <- w
+  wt$Year <- i
+  if(i==2009) {wf <- wt} else {wf <- rbind(wf, wt)}
+}
+
+#Merge food waste and animal feed intake data by continent, category and year, keeping all rows of data
+w <- merge(wf, afi, by=c("Continent", "Category", "Year"), all=T)
+
+#Average food wate percentages over the full global dataset
+ww <- dcast(w, Year+Category~., fun.aggregate=mean, value.var="WastePct")
+names(ww) <- c("Year", "Category", "WastePct")
+ww$Area = c("World")
+
+#Average food wate percentages on a continent scale
+wm <- dcast(w, Continent+Year+Category~., fun.aggregate=mean, value.var="WastePct")
+names(wm) <- c("Area", "Year", "Category", "WastePct")
+
+#Average food wate percentages for each individual continent
+wc <- dcast(w, FAO+Year+Category~., fun.aggregate=mean, value.var="WastePct")
+names(wc) <- c("Area", "Year", "Category", "WastePct")
+
+#Create country-specific waste database from scratch
+ccr <- afi[c("FAO", "Continent")]
+ccr <- distinct(ccr)
+Area <- rep(ccr$FAO, length(unique(w$Category)))
+Continent <- rep(ccr$Continent, length(unique(w$Category)))
+Category <- rep(unique(w$Category), each=length(ccr$FAO))
+ccrr <- data.frame(Area, Continent, Category)
+
+#Merge continent values into country database
+wm1 <- wm
+names(wm1) <- c("Continent", "Year", "Category", "WastePct")
+
+wc <- merge(wm1, ccrr, by=c("Continent", "Category"))
+wc$Continent <- NULL
+
+#Bind together dataframes for global, continent, and individual food waste percentages
+w <- rbind(ww, wm)
+w <- rbind(w, wc)
+
+#Merge food waste average percenates with animal feed intake kg estimated at each aggregation scale
+w <- merge(w, afif, by=c("Area", "Year", "Category"), all=T)
+
+#Omit 2018 data (not in production data)
+w <- subset(w, w$Year!=2018)
+
+#Assume missing values (for animal feed) should be 0
+w$AnimalFedkg[is.na(w$AnimalFedkg)] <- 0
+
+
+#_________________________________________________POPULATION_____________________________________________________________________________
+#Merge female and male population data
+p <- merge(f, m, by=c("Index", "Variant", "Region..subregion..country.or.area..", "Notes", "Country.code", "Type", "Parent.code", "Reference.date..as.of.1.July."))
+
+#Remove regions that are not in the FAO database 
+p <- subset(p, p$Region..subregion..country.or.area.. %in% r$Region_Population)
+
+#Create column for merging in regional cross reference (to allow merging with FAO data)
+p$Region_Population = p$Region..subregion..country.or.area..
+
+#Merge regional cross reference into population data
+p <- merge(p, r, by="Region_Population", all = T)
+
+
+#_________________________________________________PRODUCTION_____________________________________________________________________________
+#Merge crop and animal production datasets
+d <- rbind(d, a)
+
+#Merge trade data into production data by location, year, and product
+d <- merge(d, td, by=c("Area", "Year", "Item"), all=T)
+
+#Specify that missing values in the composition dataset should be 0
+cmp[is.na(cmp)]<- 0
+
+#Remove Sodium, Carbohydrate, and Fiber from the composition dataset due to lack of requirements for these nutrients
+cmp$Sodium <- NULL
+cmp$Carbohydrate <- NULL
+cmp$Total.fiber <- NULL
+
+#Merge production data with composition data by product
+d <- merge(d, cmp, by=c("Item"), all=T)
+
+#Remove areas that are not in the UN/FAO regional cross reference
+d <- subset(d, d$Area %in% r$Region_Production)
+
+#Create column to enable merging with UN/FAO regional cross reference
+d$Region_Production <- d$Area
+
+#Merge UN/FAO regional cross reference with production dataset
+d <- merge(d, r, by="Region_Production", all=T)
+
+
+#_________________________________________________Merge PRODUCTION and LOSSES_____________________________________________________________________________
+#Assume missing production values should be 0
+d$Value[is.na(d$Value)]<-0
+
+#Fix some naming conventions in d data.frame 
+d$Area <- ifelse(d$Area == "Northern America", "North America", as.character(d$Area))
+d$Imported[is.na(d$Imported)] <- 0
+d$NetSupply <- (d$Value)*1000
+
+
+#Add together the production of foods within each area, year, and food category
+pbc <- dcast(d, Area+Year+Category~., value.var="NetSupply", fun.aggregate=sum)
+pbc <- subset(pbc,  pbc$Area %in% unique(w$Area)==T & pbc$Year != 2008 & pbc$Category!="Fiber")
+
+
+#Merge the waste data (including food waste and animal intakes) into the totals by food category
+wpc <-  merge(pbc, w, by=c("Category", "Area", "Year"), all=T)
+wpc <- subset(wpc, is.na(wpc$WastePct)==F & is.na(wpc$.) ==F )
+
+#Calculate the percentage of each food category consumed by animals, convert from decimal equivalent to percentage
+wpc$AnimalFedPct <- ifelse(wpc$AnimalFedkg==0 & wpc$. == 0, 0,
+                           ifelse(wpc$AnimalFedkg<=wpc$., wpc$AnimalFedkg/wpc$.*100, 0))
+
+#Rename the waste dataframe so it now contains percentages of food categories wasted or fed to livestock within each year and each location
+w <- wpc
+
+#Remove the absolute intake data from the waste dataframe - we will use percentages for the subsequent analysis
+w$AnimalFedkg <- NULL
+
+#Rename columns in the data frame for better transparency
+names(w) <- c("Category", "Area", "Year", "NetSupply", "WastePct", "AnimalFedPct")
+
+#Merge calculated waste percentages into production data frame by location, year, and food type
+d <- merge(d, w, by=c("Area", "Year", "Category"), all=T)
+
+#Omit year of data not included in trade database
+d <- subset(d, d$Year >= 2009)
+
+#Assume values in production data not provided should be 0
+d$Value[is.na(d$Value)]<-0
+d$Imported[is.na(d$Imported)]<-0
+d$Exported[is.na(d$Exported)]<-0
+d$WastePct[is.na(d$WastePct)]<-0
+d$AnimalFedPct[is.na(d$AnimalFedPct)]<-0
+
+
+#_________________________________________________CREATE FIGURE 1_____________________________________________________________________________
+#Select continent-level data from combined data
+c <- subset(d, d$Type == "Continent")
+
+#Convert production data from tonnes to kg
+c$Produced <- c$Value*1000
+c$Imported <- c$Imported * 1000
+c$Exported <- c$Exported * 1000
+
+#Estimate domestic supply (P2) as production plus imports less exports. If less than 0, assume 0
+c$DomSup <- ifelse(c$Produced + c$Imported - c$Exported>0,c$Produced + c$Imported - c$Exported,0)
+
+#Calculate food waste as domestic supply multiplied by waste percentage
+c$Wasted <- c$DomSup*(c$WastePct/100)
+
+#Calculate quantity of product fed to livestock as domestic supply multiplied by percent of food fed to animals
+c$Fed <- c$DomSup*(c$AnimalFedPct/100)
+
+#Caulcate residual available for human consumption as domestic supply not lost to waste or animal feed
+c$Human <- c$DomSup*((100-(c$WastePct+c$AnimalFedPct))/100)
+
+#Create cross reference to link data categories with names appropriate for publication-ready figures
+Category <- unique(c$Category)
+GraphC <- c("Fruits and Berries", "Cereals", "Fruits and Berries", "Eggs", NA, "Fruits and Berries", "Meat", "Milk", "Nuts and Oilseeds", "Nuts and Oilseeds",
+            "Meat", "Fruits and Berries", "Meat", "Meat", "Pulses", "Roots and Tubers", "Meat", "Spices", "Fruits and Berries", "Sweeteners", "Fruits and Berries", "Vegetables", NA)
+catCR <- data.frame(Category, GraphC)
+
+#Merge continent-level data with graph food category cross reference
+c <- merge(c, catCR, by=c("Category"))
+
+#Keep only needed columns to make graph
+cg <- c[c("GraphC", "Area", "Year", "Produced", "Imported", "Exported", "Wasted", "Fed", "Human")]
+
+#Convert data from wide to long format using graph category, area, and year as ID variables
+cgm <- melt(cg, id=c("GraphC", "Area", "Year"))
+
+#Calculate sum of each food flux within area, year, and food category
+cgd1 <- dcast(cgm, GraphC+Area+Year+variable~., fun.aggregate = sum, value.var="value")
+
+#Calculate average of each food flux over the available years of data
+cgd <- dcast(cgd1, GraphC+Area~variable, fun.aggregate = mean)
+
+#Convert data back to long format using food category and area as id variables
+gd1 <- melt(cgd, id=c("GraphC", "Area"))
+
+#Stratify uses as either supplies, known uses (losses), or residual
+gd1$UseType <- ifelse(gd1$variable %in% c("Imported", "Produced"), "Supplies",
+                      ifelse(gd1$variable %in% c("Exported", "Fed", "Wasted"), "Known Uses", "Assumed Domestically Available"))
+
+#Omit values missing in the graph cross reference
+gd1 <- subset(gd1, is.na(gd1$GraphC)==F)
+
+#Convert values to million metric tonnes to clean up units for graphing
+gd1$MMT <- gd1$value/1000/1e6
+
+#Change Northern America to North America
+gd1$Area <- ifelse(gd1$Area == "Northern America", "North America", as.character(gd1$Area))
+
+#Omit the calculated residual values from the dataset (conceptual duplicate with residual)
+gd2 <- subset(gd1, gd1$variable != "Human")
+
+#Convert data to wide format so each use is its own column, average over category and area
+gm2 <- dcast(gd2, GraphC+Area~variable, value.var="MMT", fun.aggregate=mean)
+
+#Calculate supply as produced plus imported
+gm2$Supply <- gm2$Produced+gm2$Imported
+
+#Calculate residual as supply - exports - waste - fed
+gm2$Residual <- gm2$Supply-gm2$Exported-gm2$Wasted-gm2$Fed
+
+#Assume exports cannot create negative residual supplies
+gm2$Exp2 <- ifelse(gm2$Residual<0, gm2$Exported+gm2$Residual, gm2$Exported)
+
+#Re-calculate residuals with adjusted export values
+gm2$Res2 <- gm2$Supply-gm2$Exp2-gm2$Wasted-gm2$Fed
+
+#Keep only columns needed to create graph
+gm2 <- gm2[c("GraphC", "Area", "Supply", "Exp2", "Res2", "Fed", "Wasted")]
+
+#Rename columns to facilitate interpretability on graph
+names(gm2) <- c("GraphC", "Area", "Supply", "Exported", "Residual", "Fed", "Wasted")
+
+#Convert to long format using Category, area, and supply type as id variables
+gm3 <- melt(gm2, id=c("GraphC", "Area", "Supply"))
+
+#Sum up supplies within category (to provide numeric estimates for graph)
+gm4 <- dcast(gm3, GraphC+Area+Supply~., value.var = "value", fun.aggregate = sum)
+
+#Merge summed supply estimates into the full dataframe
+gm3 <- merge(gm3, gm4, by=c("GraphC", "Area", "Supply"))
+
+#Calculate the proportion of total supply associated with each flux of produced materials
+gm3$Prop <- gm3$value/gm3$Supply*100
+
+#Round values to 2 decimal places for graphing
+gm3$SupS <- as.character(round(gm3$Supply, 2))
+
+#Create Figure 1
+ggplot(gm3, aes(x=GraphC, y=Prop, fill=reorder(variable, Prop)))+geom_bar(stat="identity")+coord_flip()+
+  theme_classic()+scale_fill_npg()+theme(legend.position = "bottom")+
+  facet_grid(.~Area, scales="free")+
+  xlab("Category")+labs(fill="Type")+
+  ylab("Percentage of Agricultural Supply")+
+  geom_text(aes(x=GraphC, y=105, label=SupS), size=2.5, hjust=0) +
+  ylim(0,140)
+
+ggsave("Final Figure 1.jpg", width=9, height=5)
+
+#Calculate average quantity of each flux
+tapply(gm3$value, gm3$variable, sum)/1000
+
+
+
+#dcast(gd1, GraphC~variable, fun.aggregate = sum, value.var="MMT")
+
+#_________________________________________________CREATE FIGURE 2_____________________________________________________________________________
+#Reduce population data to only include relevant years
+p <- subset(p, p$Reference.date..as.of.1.July. %in% c(2005,2010,2020,2015))
+
+#Convert population data to long format
+p <- melt(p, id=c("Region_Population", "Index", "Variant", "Region..subregion..country.or.area..", "Notes", "Country.code", "Type.x", "Parent.code", "Reference.date..as.of.1.July.", "Region_Production", "Type.y"))
+
+#Remove spaces from the "value" column of the population data
+p$value <- gsub(" ", "", p$value, fixed=TRUE)
+
+#Convert population data to numeric values and multiply by 1000 to convert to actual people #s
+p$Population <- as.numeric(p$value)*1000
+
+#Calculate population Totals within an area and year
+pt <- dcast(p, Region_Population+Reference.date..as.of.1.July.~., value.var="Population", fun.aggregate=sum)
+names(pt) <- c("Region_Population", "Year", "Population")
+
+
+#Merge population data with requirement data
+names(p) <- c("Region_Population", "Index", "Variant", "Area", "Notes", "Country.code", "Type_UN", "Parent.code", "Year", "Region_Production", "Type", "Population", "value", "n")
+p <- merge(p, n, by=c("Population"), all=T)
+
+#Create year reference grid for populations
+Region_Population <- rep(unique(p$Region_Population), each=10)
+Ref <- rep(seq(2008,2017),length(unique(p$Region_Population)))
+Year <- rep(c(2005,2010,2010,2010,2010,2010,2015,2015,2015,2020), length(unique(p$Region_Population)))
+pd <- data.frame(Region_Population, Year, Ref)
+
+#Merge reference year grid into population data
+p <- merge(p, pd, by=c("Region_Population", "Year"))
+
+#Convert requirement data to long format, keeping population values as ID variables
+p <- melt(p, id=c("Region_Population", "Year", "Population", "Index", "Variant", "Area", "Notes", "Country.code", "Type_UN", "Parent.code", "Region_Production", "Type", "value", "Ref", "n"))
+names(p) <- c("Region_Population", "Year", "Population", "Index", "Variant", "Area", "Notes", "Country.code", "Type_UN", "Parent.code", "Region_Production", "Type", "UN_value", "Ref", "n", "variable", "value")
+
+#Convert requirement data to number format
+p$Daily_Req <- as.numeric(as.character(p$value))
+
+#Calculate requirement for each nutrient as population * daily requirement * 365 d/year
+p$Requirement <- p$n*p$Daily_Req*365
+
+#Calculate total requirement for each nutrient within the population
+pd <- dcast(p, Region_Population+Region_Production+Year+Ref~variable, value.var="Requirement", fun.aggregate=sum)
+
+#Convert to long format
+pd <- melt(pd, id=c("Region_Population", "Region_Production", "Year", "Ref"))
+
+#Merge requirement data with production data by area and year
+pd <- merge(pd, pt, by=c("Region_Population", "Year"))
+
+#Determine average requirement per day and average yearly requirement for sense checking
+pd$ave_Req_d <- pd$value/pd$Population/365
+pd$ave_Req_y <- pd$value/pd$Population
+
+
+#Keep only columns needed for graph
+ct <- c[c("Category", "Area", "Year","Item", "Region_Population", "Produced", "DomSup", "Wasted", "Fed", "Human")]
+
+#Specify that animal products are those from meat, milk and egg sources
+ct$Animal <- ifelse(ct$Category %in% c("Other Meat","Ruminant Meat","Hindgut Fermenter","Eggs","Pseudoruminant","Milk","Poultry"), ct$Produced, 0 )
+
+#Estimate net trade as domestic supply less production (per calculations for graph in Figure 1)
+ct$NetTrade <-ct$DomSup-ct$Produced
+
+#Specify scenario 1 as production minus nutrients from animal products
+ct$P1 <- ct$Produced-ct$Animal
+
+#Specify scenario 2 as scenario 1 plus net trade, if this yields a negative value, assume P2 is 0
+ct$P2 <- ifelse(ct$P1+ct$NetTrade>0,ct$P1+ct$NetTrade, 0)
+
+#Specify scenario 3 as scenario 2 minus waste. If this yeilds a negative value, assume P3 is 0
+ct$P3 <- ifelse(ct$P2-ct$Wasted>0,ct$P2-ct$Wasted,0)
+
+#Specify scenario 4 as scenario 3 plus animal products minus fed feed. If this yields a negative value, assume p4 is 0
+ct$P4 <- ifelse(ct$P3+ct$Animal-ct$Fed>0,ct$P3+ct$Animal-ct$Fed,0)
+
+#Keep only values needed for graphing
+ct <- ct[c("Category", "Area", "Year", "Item", "Region_Population", "P1", "P2", "P3", "P4")]
+
+#Convert to long fomat
+cc <- melt(ct, id=c("Category", "Area", "Year", "Item", "Region_Population"))
+
+#Merge composition values with calculated supplies in each scenario
+c <- merge(cc, cmp, by=c("Item", "Category"))
+
+#Omit "Fiber" as a food category because we assume fiber products are not consumed for food
+c <- subset(c, c$Category != "Fiber")
+
+#Remove unneeded columns from composition data
+c$Code <- NULL
+c$NBD.No <- NULL
+c$Citation <- NULL
+c$Column.lookup <- NULL
+
+#Convert to long format
+cm <- melt(c, id=c("Category", "Area", "Year", "Item", "Region_Population", "variable", "value", "Weight.Conversion"))
+
+#Specify we've elongated by nutrient and each value reflects composition
+names(cm) <- c("Category", "Area", "Year", "Item", "Region_Population", "Type", "Product_kg", "Weight.Conversion", "Nutrient", "Composition")
+
+#Calculate amounts of each nutrient provided as composition (g/100g) * produced kg * 10 (100g/kg)
+cm$Amount <- cm$Composition*cm$Product_kg*10
+
+#Create usable graphing names for population dataframe
+names(pd) <- c("Region_Population", "Ref", "Region_Production", "Year", "Nutrient", "Total_Req", "Population", "Ave_Req_d", "Ave_Req_y")
+
+#Merge supply data with population data by area, year, and nutrient
+cp <- merge(cm, pd, by=c("Region_Population", "Year", "Nutrient"))
+
+#Calculate HRY as amount produced divided by average yearly requirement
+cp$HRY <- cp$Amount/cp$Ave_Req_y
+
+#Convert to millions for graphing purposes
+cp$MHRY <- cp$HRY/1e6
+
+#Merge in graph category cross reference
+cp <- merge(cp, catCR, by="Category")
+
+#Sum HRY within area, category, year, and type
+cpy <- dcast(cp, Category+Region_Population+Nutrient+Area+Year+Type~., fun.aggregate=sum, value.var="HRY")
+names(cpy) <- c("Category", "Region_Population", "Nutrient", "Area", "Year", "Type", "HRY")
+
+#Average HRY across years
+cpa <- dcast(cpy, Category+Region_Population+Nutrient+Area+Type~., fun.aggregate=mean, value.var="HRY")
+names(cpa) <- c("Category", "Region_Population", "Nutrient", "Area", "Type", "HRY")
+
+#Create a nutrient cross reference to convert nutrient values to publication-appropriate labels
+Nutrient <- unique(cpa$Nutrient)
+GraphN <- c("Energy", "Protein", "Linoleic Acid", "alpha Linolenic Acid", 
+            "Calcium", "Iron", "Magnesium", "Phosphorus", "Potassium", 
+            "Zinc", "Copper", "Selenium", "Vitamin A", "Vitamin D", "Vitamin E",
+            "Vitamin C", "Thiamin", "Riboflavin", "Niacin", "Folate", "Vitamin B6", "Vitamin B12",
+            "Choline", "Vitamin K", "Cysteine", "Histidine", "Isoleucine", "Leucine", "Lysine",
+            "Methionine", "Phenylalanine", "Threonine", "Tryptophan", "Valine", "DHA", "DHA and EPA", "Arachadonic Acid")
+NutType <- c("Macro", "Macro", "Fatty Acid", "Fatty Acid", "Mineral", "Mineral", "Mineral", "Mineral", "Mineral", "Mineral", "Mineral", "Mineral", "Vitamin", "Vitamin", "Vitamin", "Vitamin", "Vitamin", "Vitamin", "Vitamin", "Vitamin", "Vitamin", "Vitamin", "Vitamin", "Vitamin", "Amino Acid", "Amino Acid", "Amino Acid", "Amino Acid", "Amino Acid", "Amino Acid", "Amino Acid", "Amino Acid", "Amino Acid", "Amino Acid", "Fatty Acid", "Fatty Acid", "Fatty Acid")
+nutCR <- data.frame(Nutrient, GraphN, NutType)
+
+#Make nutrient type an ordered factor so it will show up in order in the plots to facilitate grouping of nutrients
+nutCR$NutType <- factor(nutCR$NutType, levels=c("Macro", "Amino Acid", "Fatty Acid", "Vitamin", "Mineral"), ordered = T)
+
+#Merge supply data with nutrient cross reference
+cpa <- merge(cpa, nutCR, by="Nutrient")
+
+#Calculate total provision of each nutrient within category and area
+cpp <- dcast(cpa, GraphN+NutType+Area~Type, value.var="HRY", fun.aggregate = sum)
+
+#Convert nutrient totals to long format
+cpp2 <- melt(cpp, id=c("GraphN", "NutType", "Area"))
+
+#Calculate billions of HRY provided as total values
+cpp2$BHRY <- cpp2$value/1e9
+
+#Rename Northern America to North America
+cpp2$Area <- ifelse(cpp2$Area == "Northern America", "North America", as.character(cpp2$Area))
+
+#Graph the nutrient supply totals
+ggplot(cpp2, aes(x=GraphN, y=BHRY, fill=variable))+geom_bar(stat="identity", position="dodge")+coord_flip()+
+  theme_classic()+scale_fill_npg()+theme(legend.position = "bottom")+
+  facet_grid(NutType~Area, scale="free", space="free_y")+
+  xlab("Category")+labs(fill="Type")+
+  ylab("Billions of Human Nutrient Requirement Years Provided by Agricultural Supply")+
+  theme(axis.text.x = element_text(angle = 90, hjust=1))
+
+ggsave("Final Figure 2.jpg", width=9, height=12)
+
+#_________________________________________________CREATE FIGURE 3 and 4_____________________________________________________________________________
+#Keep the P4 data
+f3 <- subset(cpa, cpa$Type == "P4")
+
+#Merge production data with food category cross reference
+f3 <- merge(f3, wcr, by=c("Category"))
+
+#Calculate mean population for each region
+pop <- dcast(pd, Region_Population~., value.var="Population", fun.aggregate=mean )
+names(pop) <- c("Region_Population", "Population")
+
+#Calculate total HRY provided in each region for each nutrient
+f4 <- dcast(f3, Region_Population+GraphN~., value.var="HRY", fun.aggregate=sum)
+names(f4) <- c("Region_Population","GraphN", "Total_HRY")
+
+#Merge HRY and population data
+f4 <- merge(f4, pop, by=c("Region_Population"))
+
+#Calculate the proportion of the population fed in each region for each nutrient
+f4$Fed <- round(f4$Total_HRY/f4$Population,1)
+
+#Merge proportion fed back into full nutrient/region data frame
+f3 <- merge(f3, f4, by=c("Region_Population", "GraphN"))
+
+#Correct Categories
+f3$Food_Class <- ifelse(f3$Category == "Sweeteners", "Sweeteners",
+                        ifelse(f3$Category=="Cereals", "Cereals", as.character(f3$Food_Class)))
+
+#Figure 4
+ggplot(f3, aes(x=GraphN, y=HRY, fill=reorder(Food_Class, HRY)))+geom_bar(stat="identity", position="fill")+coord_flip()+
+  theme_classic()+scale_fill_manual(values=c("#E64B35FF", "#4DBBD5FF", "#00A087FF", "#3C5488FF", "#F39B7FFF", "#8491B4FF", "#91D1C2FF", "#DC0000FF", "#FF9900", "#B09C85FF", "#666666"))+theme(legend.position = "bottom")+
+  facet_grid(NutType~Area, scale="free", space="free_y")+
+  xlab("Category")+labs(fill="Type")+
+  ylab("Human Nutrient Requirement Years, billions")+
+  theme(axis.text.x = element_text(angle = 90, hjust=1))+
+  geom_text(aes(x=GraphN, y=1.3, label=Fed), size=2, hjust=1)
+
+ggsave("Final Figure 4.jpg", width=7, height=10)
+
+
+#Calculate proportion of energy coming from different categories for discussion
+en <- subset(f3, f3$Nutrient == "Energy")
+en1 <- dcast(en, Region_Population~Category, value.var="HRY", fun.aggregate = mean)
+en1 <- melt(en1, id="Region_Population")
+en2 <- dcast(en, Region_Population~., value.var="HRY", fun.aggregate = sum)
+en3 <- merge(en1, en2, by=c("Region_Population"))
+en3$value[is.na(en3$value)] <- 0
+en3$Prop <- en3$value/en3$.
+en4 <- dcast(en3, Region_Population~variable, value.var="Prop", fun.aggregate=mean)
+en4
+
+#________________________________________Global Data______________________________________________________
+#Subset to use only global data
+c <- subset(d, d$Type == "Global")
+
+#Convert tonnes to kg
+c$Produced <- c$Value*1000
+c$Imported <- c$Imported * 1000
+c$Exported <- c$Exported * 1000
+
+#Calculate supply values following the approach described under Figure 2
+c$DomSup <- ifelse(c$Produced + c$Imported - c$Exported>0,c$Produced + c$Imported - c$Exported,0)
+c$Wasted <- c$DomSup*(c$WastePct/100)
+c$Fed <- c$DomSup*(c$AnimalFedPct/100)
+c$Human <- c$DomSup*((100-(c$WastePct+c$AnimalFedPct))/100)
+
+#Merge food category cross reference list
+c <- merge(c, catCR, by=c("Category"))
+
+
+#Calculate global supply for each scenario following approach under Figure 2
+ct <- c[c("Category", "Area", "Year","Item", "Region_Population", "Produced", "DomSup", "Wasted", "Fed", "Human")]
+ct$Animal <- ifelse(ct$Category %in% c("Other Meat","Ruminant Meat","Hindgut Fermenter","Eggs","Pseudoruminant","Milk","Poultry"), ct$Produced, 0 )
+ct$NetTrade <-ct$DomSup-ct$Produced
+ct$P1 <- ct$Produced-ct$Animal
+ct$P2 <- ifelse(ct$P1+ct$NetTrade>0,ct$P1+ct$NetTrade, 0)
+ct$P3 <- ifelse(ct$P2-ct$Wasted>0,ct$P2-ct$Wasted,0)
+ct$P4 <- ifelse(ct$P3+ct$Animal-ct$Fed>0,ct$P3+ct$Animal-ct$Fed,0)
+ct <- ct[c("Category", "Area", "Year", "Item", "Region_Population", "P1", "P2", "P3", "P4")]
+cc <- melt(ct, id=c("Category", "Area", "Year", "Item", "Region_Population"))
+c <- merge(cc, cmp, by=c("Item", "Category"))
+c <- subset(c, c$Category != "Fiber")
+c$Code <- NULL
+c$NBD.No <- NULL
+c$Citation <- NULL
+c$Column.lookup <- NULL
+cm <- melt(c, id=c("Category", "Area", "Year", "Item", "Region_Population", "variable", "value", "Weight.Conversion"))
+names(cm) <- c("Category", "Area", "Year", "Item", "Region_Population", "Type", "Product_kg", "Weight.Conversion", "Nutrient", "Composition")
+cm$Amount <- cm$Composition*cm$Product_kg*10
+
+#Clean up population matrix
+names(pd) <- c("Region_Population", "Ref", "Region_Production", "Year", "Nutrient", "Total_Req", "Population", "Ave_Req_d", "Ave_Req_y")
+
+#Merge population data into production data
+cp <- merge(cm, pd, by=c("Region_Population", "Year", "Nutrient"))
+
+#Calculate HRY
+cp$HRY <- cp$Amount/cp$Ave_Req_y
+
+#Convert to Millions for Graphing
+cp$MHRY <- cp$HRY/1e6
+
+#Merge in food type cross reference for graphing
+cp <- merge(cp, catCR, by="Category")
+
+#Sum HRY over food types
+cpy <- dcast(cp, Category+Region_Population+Nutrient+Area+Year+Type~., fun.aggregate=sum, value.var="HRY")
+names(cpy) <- c("Category", "Region_Population", "Nutrient", "Area", "Year", "Type", "HRY")
+
+#Average HRY by year
+cpa <- dcast(cpy, Category+Region_Population+Nutrient+Area+Type~., fun.aggregate=mean, value.var="HRY")
+names(cpa) <- c("Category", "Region_Population", "Nutrient", "Area", "Type", "HRY")
+
+#Merge in nutrient cross reference
+cpa <- merge(cpa, nutCR, by="Nutrient")
+
+#Get average population data
+pda <- dcast(pd, Region_Population~., value.var="Population", fun.aggregate= mean)
+names(pda) <- c("Region_Population", "Population")
+
+#Merge nutrient data with average population data for ratio-ing to population
+cpap <- merge(cpa, pda, by=c("Region_Population"))
+
+#Sum HR provided by type
+cpp <- dcast(cpap, GraphN+NutType+Area+Population~Type, value.var="HRY", fun.aggregate = sum)
+
+#Convert to long format
+cppm <- melt(cpp, id=c("GraphN", "NutType", "Area", "Population"))
+
+#Calculate prodution as a proportion of population
+cppm$Produced <- cppm$value/cppm$Population
+
+#Figure 3
+ggplot(cppm, aes(y=GraphN, x=Produced))+geom_point()+geom_segment(aes(x=0, y=GraphN, xend=Produced, yend=GraphN))+
+  theme_classic()+scale_color_npg()+
+  facet_grid(NutType~variable, scale="free_y", space="free_y" )+
+  ylab("Category")+
+  xlab("Nutrient Production Relative to Population Requirement")+
+  theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0))+
+  geom_vline(xintercept=1, color="grey")+
+  geom_vline(xintercept=1.403307, color="red", linetype="dashed")
+
+ggsave("Final Figure 3.jpg", width=7, height=10)
+
+
+
+#________________________________________FIGURE 5______________________________________________________
+#Work with country-specific data
+c <- subset(d, d$Type == "Country")
+
+#Modify values as described for Figure 2
+c$Produced <- c$Value*1000
+c$Imported <- c$Imported * 1000
+c$Exported <- c$Exported * 1000
+
+c$DomSup <- ifelse(c$Produced + c$Imported - c$Exported>0,c$Produced + c$Imported - c$Exported,0)
+c$Wasted <- c$DomSup*(c$WastePct/100)
+c$Fed <- c$DomSup*(c$AnimalFedPct/100)
+c$Human <- c$DomSup*((100-(c$WastePct+c$AnimalFedPct))/100)
+c <- merge(c, catCR, by=c("Category"))
+ct <- c[c("Category", "Area", "Year","Item", "Region_Population", "Produced", "DomSup", "Wasted", "Fed", "Human")]
+ct$Animal <- ifelse(ct$Category %in% c("Other Meat","Ruminant Meat","Hindgut Fermenter","Eggs","Pseudoruminant","Milk","Poultry"), ct$Produced, 0 )
+ct$NetTrade <-ct$DomSup-ct$Produced
+ct$P1 <- ct$Produced-ct$Animal
+ct$P2 <- ifelse(ct$P1+ct$NetTrade>0,ct$P1+ct$NetTrade, 0)
+ct$P3 <- ifelse(ct$P2-ct$Wasted>0,ct$P2-ct$Wasted,0)
+ct$P4 <- ifelse(ct$P3+ct$Animal-ct$Fed>0,ct$P3+ct$Animal-ct$Fed,0)
+ct <- ct[c("Category", "Area", "Year", "Item", "Region_Population", "P1", "P2", "P3", "P4")]
+cc <- melt(ct, id=c("Category", "Area", "Year", "Item", "Region_Population"))
+c <- merge(cc, cmp, by=c("Item", "Category"))
+c <- subset(c, c$Category != "Fiber")
+c$Code <- NULL
+c$NBD.No <- NULL
+c$Citation <- NULL
+c$Column.lookup <- NULL
+cm <- melt(c, id=c("Category", "Area", "Year", "Item", "Region_Population", "variable", "value", "Weight.Conversion"))
+names(cm) <- c("Category", "Area", "Year", "Item", "Region_Population", "Type", "Product_kg", "Weight.Conversion", "Nutrient", "Composition")
+cm$Amount <- cm$Composition*cm$Product_kg*10
+cp <- merge(cm, pd, by=c("Region_Population", "Year", "Nutrient"))
+
+#Calculate HRY
+cp$HRY <- cp$Amount/cp$Ave_Req_y
+
+#Convert to millions of HRY
+cp$MHRY <- cp$HRY/1e6
+
+#Merge in food category cross reference sheet
+cp <- merge(cp, catCR, by="Category")
+
+#Sum HRY over area, year, and type
+cpy <- dcast(cp, Category+Region_Population+Nutrient+Area+Year+Type~., fun.aggregate=sum, value.var="HRY")
+names(cpy) <- c("Category", "Region_Population", "Nutrient", "Area", "Year", "Type", "HRY")
+
+#Average HRY over years
+cpa <- dcast(cpy, Category+Region_Population+Nutrient+Area+Type~., fun.aggregate=mean, value.var="HRY")
+names(cpa) <- c("Category", "Region_Population", "Nutrient", "Area", "Type", "HRY")
+
+#Merge in nutrient cross reference
+cpa <- merge(cpa, nutCR, by="Nutrient")
+
+#Determine average population within region
+pda <- dcast(pd, Region_Population~., value.var="Population", fun.aggregate= mean)
+names(pda) <- c("Region_Population", "Population")
+
+#Merge HRY with average population values
+cpap <- merge(cpa, pda, by=c("Region_Population"))
+
+#Sum HRY by area and year over type
+cpp <- dcast(cpap, GraphN+NutType+Area+Population~Type, value.var="HRY", fun.aggregate = sum)
+
+#Calculate production from P4 scenario ratioed to population
+cpp$Produced <- cpp$P4/cpp$Population
+
+#Calculate deficient people if production ratio is less than 1
+cpp$Deficient <- ifelse(cpp$Produced<1, -cpp$Population*cpp$Produced,0)
+
+#Calculate excess people if production ratio is greater than or equal to 1
+cpp$Excess <- ifelse(cpp$Produced>=1, cpp$Population*cpp$Produced,0)
+
+#Sum deficiencies by nutrient 
+cpDef <- dcast(cpp, GraphN+NutType~., value.var="Deficient", fun.aggregate=sum, na.rm=T)
+
+#Sum excesses by nutrient 
+cpEx <- dcast(cpp, GraphN+NutType~., value.var="Excess", fun.aggregate=sum, na.rm=T)
+
+#Merge data frames with summed deficiencies and excesses
+cpg1 <- merge(cpDef, cpEx, by=c("GraphN", "NutType"))
+names(cpg1) <- c("GraphN", "NutType", "Deficient", "Excess")
+
+#Convert data to long format for graphing
+cpg2 <- melt(cpg1, id=c("GraphN", "NutType"))
+
+#Replicate data twice, once for graphing as "Deficient only"/"excess only", and once for graphing together
+cpg3 <- rbind(cpg2, cpg2)
+cpg3$axis <- c(rep("Deficient Only", length(cpg1$Deficient)), rep("Excess Only", length(cpg1$Deficient)), rep("Together", length(cpg2$GraphN)))
+
+#Convert value to billions for ease
+cpg3$value <- cpg3$value/1e9
+
+#Create Figure 5
+ggplot(cpg3, aes(y=value, x=GraphN, fill=variable))+geom_bar(stat="identity", position="stack")+coord_flip()+
+  theme_classic()+theme(legend.position = "bottom")+scale_fill_npg()+
+  facet_grid(NutType~axis, scale="free", space="free_y")+
+  xlab("Category")+labs(fill="Type")+
+  ylab("Billions of Human Nutrient Requirement Years Over or Under Supplied by Agricultural System")
+
+ggsave("Final Figure 5.jpg", width=8, height=8)
+
+cpg3[cpg3$GraphN=="Energy",]
+cpg3[cpg3$GraphN=="Protein",]
+cpg3[cpg3$GraphN=="Lysine",]
+cpg3[cpg3$GraphN=="Methionine",]
+cpg3[cpg3$GraphN=="Phenylalanine",]
+cpg3[cpg3$GraphN=="DHA and EPA",]
+cpg3[cpg3$GraphN=="Linoleic Acid",]
+cpg3[cpg3$GraphN=="alpha Linolenic Acid",]
+
+cpg3[order(cpg3$value), ]
+
+#___________________________FIGURE 6________________________________________
+#Sum P4 Production by area, year across category
+ctt <- dcast(ct, Area+Region_Population+Year~Category, value.var="P4", fun.aggregate=sum)
+
+#Sum together relevant categories
+ctt$Total <- ctt$Berries+ctt$Cereals+ctt$`Citrus Fruit`+ctt$Eggs+ctt$Fiber+ctt$`Fresh Fruit`+ctt$`Hindgut Fermenter`+ctt$Milk+ctt$Nuts+ctt$Oilseeds+ctt$`Other Meat`+ctt$`Pome Fruit`+ctt$Poultry+ctt$Pseudoruminant+ctt$Pulses+ctt$`Roots and Tubers`+ctt$`Ruminant Meat`+ctt$Spices+ctt$`Stone Fruit`+ctt$Sweeteners+ctt$`Tropical Fruits`+ctt$`Vegetables, fresh`
+
+#Omit NA categories
+ctt$'NA' <- NULL
+
+#Convert to long format
+ctp <- melt(ctt, id=c("Area", "Region_Population", "Year", "Total"))
+
+#Calculate proportion of total production coming from each category
+ctp$Pct <- ctp$value/ctp$Total*100
+
+#Average percentages across years
+cta <- dcast(ctp, Area+Region_Population~variable, value.var="Pct", fun.aggregate=mean)
+
+#Merge production and population data
+f1 <- merge(cpp, cta, by=c("Area"))
+
+#Average emissions by areas
+e1 <- dcast(e, Area~., value.var="Value", fun.aggregate = mean)
+names(e1) <- c("Area", "GGCO2")
+
+#Keep water withdrawal data in water dataset
+e2 <- subset(t, t$Variable.Name == "Agricultural water withdrawal")
+
+#Average water data by area
+e3 <- dcast(e2, ï..Area~., value.var="Value", fun.aggregate = mean)
+names(e3) <- c("Area", "Water")
+
+#Merge emissions and production data
+f2 <- merge(f1, e1, by=c("Area"))
+
+#Merge in water data
+f3 <- merge(f2, e3, by=c("Area"))
+
+#Calculate per capital GHGe
+f3$PerCapitaGHGe <- (f3$GGCO2*1000)/f3$Population
+
+#Calculate per capital water withdrawal
+f3$PerCapitaH2O <- (f3$Water*1e6)/f3$Population
+
+#Sum feeds coming from animals
+f3$Animal <- f3$`Hindgut Fermenter`+f3$Milk+f3$`Other Meat`+f3$Poultry+f3$Pseudoruminant+f3$`Ruminant Meat`+f3$Eggs
+
+#Average values across area and nutrient
+g1 <- dcast(f3, Area~GraphN, value.var="Produced", fun.aggregate = mean)
+
+#Remove unneeded columns
+f3$Region_Population <- NULL
+f3$GraphN <- NULL
+f3$NutType <- NULL
+f3$P1 <- NULL
+f3$P2 <- NULL
+f3$P3 <- NULL
+f3$P4 <- NULL
+f3$Produced <- NULL
+f3$Insufficient <- NULL
+
+#Merge average production values with all production data
+g2 <- merge(g1, f3, by="Area")
+
+#Remove unneeded data
+g2$Area <- NULL
+g2$Producer <- NULL
+g2$Population <- NULL
+g2$GGCO2 <- NULL
+g2$Water <- NULL
+
+#Keep only complete cases
+g2 <- g2[complete.cases((g2)),]
+
+#Summarize fruits
+g2$Fruits <- g2$`Fresh Fruit`+g2$`Pome Fruit`+g2$`Stone Fruit`+g2$`Citrus Fruit`+g2$`Tropical Fruits`
+g2$`Fresh Fruit` <- NULL
+g2$`Pome Fruit` <- NULL
+g2$`Stone Fruit` <- NULL
+g2$`Citrus Fruit` <- NULL
+g2$`Tropical Fruits` <- NULL
+
+#Specify non-ruminant vs ruminant meat
+g2$`Non Ruminant Meat` <- g2$Pseudoruminant+g2$`Hindgut Fermenter`+g2$Poultry+g2$`Other Meat`
+g2$Pseudoruminant <- NULL
+g2$`Hindgut Fermenter` <- NULL
+g2$Poultry <- NULL
+g2$`Other Meat` <- NULL
+
+#Order columns to allow easier comparisons
+col_order <- c("Cereals","Sweeteners","Pulses","Nuts", "Oilseeds", "Vegetables, fresh", "Fruits", "Berries", "Roots and Tubers", "Spices","Animal", "Ruminant Meat", "Non Ruminant Meat", "Milk", "Eggs", 
+               "Energy", "Protein", "Valine", "Tryptophan", "Threonine", "Phenylalanine", "Methionine", "Lysine", "Leucine", "Isoleucine", "Histidine", "Cysteine", "Linoleic Acid", "DHA and EPA", "Arachadonic Acid", "alpha Linolenic Acid", "Vitamin K", "Vitamin E", "Vitamin D", "Vitamin C", "Vitamin B6", "Vitamin B12", "Vitamin A", "Thiamin","Riboflavin", "Niacin", "Folate","Choline", "Zinc", 
+               "Selenium", "Potassium", "Phosphorus", "Magnesium", "Iron", "Copper", "Calcium", "PerCapitaGHGe", "PerCapitaH2O")
+g2 <- g2[,col_order]
+
+#Calculation correlations and round to 2 decimals
+g3 <- round(cor(g2), 2)
+
+#Plot correlations
+ggplot(melt(g3), aes(Var1, Var2, fill=value)) +
+  geom_tile(height=0.8, width=0.8) +
+  scale_fill_gradient2(low="blue", mid="white", high="red") +
+  theme_minimal() +
+  coord_equal() +
+  labs(x="",y="",fill="Corr") +
+  theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0))
+
+ggsave("Final Figure 6.jpg", width=8, height=8)
